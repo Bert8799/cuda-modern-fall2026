@@ -10,6 +10,9 @@
 constexpr int THREADS_PER_BLOCK = 256;
 constexpr float RELATIVE_TOLERANCE = 1e-5f;
 
+static_assert((THREADS_PER_BLOCK & (THREADS_PER_BLOCK - 1)) == 0,
+              "THREADS_PER_BLOCK must be a power of two");
+
 struct CudaDeleter {
     void operator()(float *pointer) const noexcept {
         if (pointer != nullptr) {
@@ -29,24 +32,29 @@ struct CudaDeleter {
     } while (false)
 
 __global__ void reduce(float *input, float *output, int N) {
-    // This version intentionally uses global memory instead of shared memory.
-    // The input values are reduced in place within each block's range.
+    __shared__ float shared_data[THREADS_PER_BLOCK];
+
     const int tid = threadIdx.x;
     const int block_start = blockIdx.x * blockDim.x;
     const int index = block_start + tid;
+
+    // Pad an incomplete final block with zero so every shared-memory access
+    // during the reduction stays within the fixed-size shared array.
+    shared_data[tid] = index < N ? input[index] : 0.0f;
+    __syncthreads();
 
     // Reduce the distance by half after every round: 128, 64, ..., 1.
     // The reverse order prevents a value written in the current round from
     // being read again by another pair in that same round.
     for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
-        if (tid < stride && index + stride < N) {
-            input[index] += input[index + stride];
+        if (tid < stride) {
+            shared_data[tid] += shared_data[tid + stride];
         }
         __syncthreads();
     }
 
     if (tid == 0) {
-        output[blockIdx.x] = input[block_start];
+        output[blockIdx.x] = shared_data[0];
     }
 }
 
