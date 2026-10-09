@@ -14,24 +14,28 @@ static_assert((THREADS_PER_BLOCK & (THREADS_PER_BLOCK - 1)) == 0,
               "THREADS_PER_BLOCK must be a power of two");
 
 struct CudaDeleter {
-    void operator()(float *pointer) const noexcept {
+    void operator()(float* pointer) const noexcept {
         if (pointer != nullptr) {
             cudaFree(pointer);
         }
     }
 };
 
-#define CUDA_CHECK(call)                                                        \
-    do {                                                                        \
-        const cudaError_t error = (call);                                       \
-        if (error != cudaSuccess) {                                             \
-            std::fprintf(stderr, "%s failed at %s:%d: %s\n", #call,             \
-                         __FILE__, __LINE__, cudaGetErrorString(error));        \
-            return EXIT_FAILURE;                                                \
-        }                                                                       \
+#define CUDA_CHECK(call)                             \
+    do {                                             \
+        const cudaError_t error = (call);            \
+        if (error != cudaSuccess) {                  \
+            std::fprintf(stderr,                     \
+                         "%s failed at %s:%d: %s\n", \
+                         #call,                      \
+                         __FILE__,                   \
+                         __LINE__,                   \
+                         cudaGetErrorString(error)); \
+            return EXIT_FAILURE;                     \
+        }                                            \
     } while (false)
 
-__global__ void reduce(float *input, float *output, int N) {
+__global__ void reduce(float* input, float* output, int N) {
     __shared__ float shared_data[THREADS_PER_BLOCK];
 
     const int tid = threadIdx.x;
@@ -58,16 +62,14 @@ __global__ void reduce(float *input, float *output, int N) {
     }
 }
 
-bool check(const std::vector<float> &expected,
-           const std::vector<float> &actual) {
+bool check(const std::vector<float>& expected, const std::vector<float>& actual) {
     if (expected.size() != actual.size()) {
         return false;
     }
 
     for (std::size_t i = 0; i < expected.size(); i++) {
         const float difference = std::fabs(expected[i] - actual[i]);
-        const float tolerance = RELATIVE_TOLERANCE *
-                                std::max(1.0f, std::fabs(expected[i]));
+        const float tolerance = RELATIVE_TOLERANCE * std::max(1.0f, std::fabs(expected[i]));
         if (difference > tolerance) {
             return false;
         }
@@ -85,7 +87,7 @@ int main() {
 
     std::mt19937 generator(0);
     std::uniform_real_distribution<float> distribution(0.0f, 1.0f);
-    for (float &value : input) {
+    for (float& value : input) {
         value = distribution(generator);
     }
 
@@ -100,30 +102,26 @@ int main() {
         expected[i] = sum;
     }
 
-    float *device_input = nullptr;
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void **>(&device_input),
-                          input.size() * sizeof(float)));
+    float* device_input = nullptr;
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_input), input.size() * sizeof(float)));
 
     std::unique_ptr<float, CudaDeleter> input_guard(device_input);
 
-    float *device_output = nullptr;
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void **>(&device_output),
-                          output.size() * sizeof(float)));
+    float* device_output = nullptr;
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&device_output), output.size() * sizeof(float)));
 
     std::unique_ptr<float, CudaDeleter> output_guard(device_output);
 
-    CUDA_CHECK(cudaMemcpy(input_guard.get(), input.data(),
-                          input.size() * sizeof(float),
-                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(
+        input_guard.get(), input.data(), input.size() * sizeof(float), cudaMemcpyHostToDevice));
 
     reduce<<<static_cast<unsigned int>(block_num), THREADS_PER_BLOCK>>>(
         input_guard.get(), output_guard.get(), N);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    CUDA_CHECK(cudaMemcpy(output.data(), output_guard.get(),
-                          output.size() * sizeof(float),
-                          cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(
+        output.data(), output_guard.get(), output.size() * sizeof(float), cudaMemcpyDeviceToHost));
 
     if (check(expected, output)) {
         std::printf("Results match!\n");

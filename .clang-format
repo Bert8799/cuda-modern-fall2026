@@ -1,0 +1,40 @@
+---
+BasedOnStyle: Google
+
+# General indentation and line width.
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+
+# Keep pointers attached to the variable name.
+DerivePointerAlignment: false
+PointerAlignment: Left
+
+# Braces and short statements.
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+IndentCaseLabels: true
+
+# Spaces and parentheses.
+SpaceBeforeParens: ControlStatements
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+SpaceBeforeAssignmentOperators: true
+
+# Includes and comments.
+IncludeBlocks: Preserve
+SortIncludes: Never
+ReflowComments: true
+
+# Keep declarations readable.
+AlwaysBreakAfterReturnType: None
+AlwaysBreakAfterDefinitionReturnType: None
+BinPackArguments: false
+BinPackParameters: false
+
+# CUDA files use the C++ formatter rules.
+Language: Cpp
+...
