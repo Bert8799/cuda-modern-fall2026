@@ -55,11 +55,24 @@ __global__ void reduce(float* input, float* output, int N) {
     // Reduce the distance by half after every round: 128, 64, ..., 1.
     // The reverse order prevents a value written in the current round from
     // being read again by another pair in that same round.
-    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+
+    // Unroll the last warp to avoid __syncthreads() overhead.
+    for (int stride = blockDim.x / 2; stride > 32; stride >>= 1) {
         if (tid < stride) {
             shared_data[tid] += shared_data[tid + stride];
         }
         __syncthreads();
+    }
+
+    // Unroll the last warp without __syncthreads().
+    if (tid < 32) {
+        volatile float* volatile_shared_data = shared_data;
+        volatile_shared_data[tid] += volatile_shared_data[tid + 32];
+        volatile_shared_data[tid] += volatile_shared_data[tid + 16];
+        volatile_shared_data[tid] += volatile_shared_data[tid + 8];
+        volatile_shared_data[tid] += volatile_shared_data[tid + 4];
+        volatile_shared_data[tid] += volatile_shared_data[tid + 2];
+        volatile_shared_data[tid] += volatile_shared_data[tid + 1];
     }
 
     if (tid == 0) {
