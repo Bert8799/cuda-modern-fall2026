@@ -1,10 +1,8 @@
 # Ignore build artifacts
 build/
-compile_commands.json
 
 # Ignore IDE and editor files
 .vscode/
-.clangd
 
 # Ignore agent files
 .agents/

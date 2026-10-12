@@ -1,0 +1,22 @@
+If:
+  PathMatch: .*\.cu
+Diagnostics:
+  Suppress:
+    - ovl_no_oper
+    - ovl_no_viable_function_in_init
+    - no_member
+    - typename_nested_not_found
+
+CompileFlags:
+  Compiler: clang++
+  Add:
+    - --cuda-path=/usr/local/cuda
+    - -std=c++17
+    - --cuda-gpu-arch=sm_75
+  Remove:
+    - -forward-unknown-to-host-compiler
+    - -ccbin=*
+    - --options-file
+    - --generate-code=*
+    - -G
+    - -arch=native

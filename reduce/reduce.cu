@@ -39,12 +39,17 @@ __global__ void reduce(float* input, float* output, int N) {
     __shared__ float shared_data[THREADS_PER_BLOCK];
 
     const int tid = threadIdx.x;
-    const int block_start = blockIdx.x * blockDim.x;
-    const int index = block_start + tid;
+    const int block_start = blockIdx.x * blockDim.x * 2;
+    const int index_a = block_start + tid;
+    const int index_b = index_a + blockDim.x;
+
+    // load two elements per thread from global memory to shared memory
+    const float a = index_a < N ? input[index_a] : 0.0f;
+    const float b = index_b < N ? input[index_b] : 0.0f;
 
     // Pad an incomplete final block with zero so every shared-memory access
     // during the reduction stays within the fixed-size shared array.
-    shared_data[tid] = index < N ? input[index] : 0.0f;
+    shared_data[tid] = a + b;
     __syncthreads();
 
     // Reduce the distance by half after every round: 128, 64, ..., 1.
@@ -79,7 +84,7 @@ bool check(const std::vector<float>& expected, const std::vector<float>& actual)
 
 int main() {
     const int N = 32 * 1024 * 1024;
-    const int block_num = (N + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+    const int block_num = (N + THREADS_PER_BLOCK - 1) / (2 * THREADS_PER_BLOCK);
 
     std::vector<float> input(N);
     std::vector<float> output(block_num);
@@ -93,11 +98,10 @@ int main() {
 
     for (int i = 0; i < block_num; i++) {
         float sum = 0.0f;
-        for (int j = 0; j < THREADS_PER_BLOCK; j++) {
-            const int index = i * THREADS_PER_BLOCK + j;
-            if (index < N) {
-                sum += input[index];
-            }
+        const int block_start = i * 2 * THREADS_PER_BLOCK;
+        const int block_end = std::min(block_start + 2 * THREADS_PER_BLOCK, N);
+        for (int j = block_start; j < block_end; j++) {
+            sum += input[j];
         }
         expected[i] = sum;
     }
