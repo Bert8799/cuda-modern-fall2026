@@ -21,5 +21,6 @@ endif()
 find_package(BLAS REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 
-# Load targets defined by the reduction example.
+# Load targets defined by the reduction and SGEMM examples.
 add_subdirectory(reduce)
+add_subdirectory(sgemm)
