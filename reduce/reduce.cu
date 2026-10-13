@@ -8,6 +8,8 @@
 #include <cuda_runtime.h>
 
 constexpr int THREADS_PER_BLOCK = 256;
+constexpr int WARP_SIZE = 32;
+constexpr int WARP_COUNT = THREADS_PER_BLOCK / WARP_SIZE;
 constexpr float RELATIVE_TOLERANCE = 1e-5f;
 
 static_assert((THREADS_PER_BLOCK & (THREADS_PER_BLOCK - 1)) == 0,
@@ -35,48 +37,45 @@ struct CudaDeleter {
         }                                            \
     } while (false)
 
-__global__ void reduce(float* input, float* output, int N) {
-    __shared__ float shared_data[THREADS_PER_BLOCK];
+// Reduce a partial sum across all 32 lanes of a warp with shuffle instructions.
+// The value converges to lane 0; every lane must call it with the same mask.
+__device__ __forceinline__ float warp_reduce_sum(float value) {
+    value += __shfl_down_sync(0xffffffff, value, 16);
+    value += __shfl_down_sync(0xffffffff, value, 8);
+    value += __shfl_down_sync(0xffffffff, value, 4);
+    value += __shfl_down_sync(0xffffffff, value, 2);
+    value += __shfl_down_sync(0xffffffff, value, 1);
+    return value;
+}
 
+__global__ void reduce(float* input, float* output, int N) {
     const int tid = threadIdx.x;
     const int block_start = blockIdx.x * blockDim.x * 2;
     const int index_a = block_start + tid;
     const int index_b = index_a + blockDim.x;
 
-    // load two elements per thread from global memory to shared memory
+    // Load two elements per thread and add them in registers.
     const float a = index_a < N ? input[index_a] : 0.0f;
     const float b = index_b < N ? input[index_b] : 0.0f;
 
-    // Pad an incomplete final block with zero so every shared-memory access
-    // during the reduction stays within the fixed-size shared array.
-    shared_data[tid] = a + b;
+    // Reduce each warp to a single partial sum in registers, then hand only
+    // the warp-level sums to shared memory for the cross-warp reduction.
+    __shared__ float warp_level_sums[WARP_COUNT];
+    const float warp_sum = warp_reduce_sum(a + b);
+    const int lane_id = tid % WARP_SIZE;
+    const int warp_id = tid / WARP_SIZE;
+    if (lane_id == 0) {
+        warp_level_sums[warp_id] = warp_sum;
+    }
     __syncthreads();
 
-    // Reduce the distance by half after every round: 128, 64, ..., 1.
-    // The reverse order prevents a value written in the current round from
-    // being read again by another pair in that same round.
-
-    // Unroll the last warp to avoid __syncthreads() overhead.
-    for (int stride = blockDim.x / 2; stride > 32; stride >>= 1) {
-        if (tid < stride) {
-            shared_data[tid] += shared_data[tid + stride];
+    // Let the first warp reduce the WARP_COUNT warp-level sums.
+    if (warp_id == 0) {
+        const float warp_level_sum = lane_id < WARP_COUNT ? warp_level_sums[lane_id] : 0.0f;
+        const float block_sum = warp_reduce_sum(warp_level_sum);
+        if (lane_id == 0) {
+            output[blockIdx.x] = block_sum;
         }
-        __syncthreads();
-    }
-
-    // Unroll the last warp without __syncthreads().
-    if (tid < 32) {
-        volatile float* volatile_shared_data = shared_data;
-        volatile_shared_data[tid] += volatile_shared_data[tid + 32];
-        volatile_shared_data[tid] += volatile_shared_data[tid + 16];
-        volatile_shared_data[tid] += volatile_shared_data[tid + 8];
-        volatile_shared_data[tid] += volatile_shared_data[tid + 4];
-        volatile_shared_data[tid] += volatile_shared_data[tid + 2];
-        volatile_shared_data[tid] += volatile_shared_data[tid + 1];
-    }
-
-    if (tid == 0) {
-        output[blockIdx.x] = shared_data[0];
     }
 }
 
