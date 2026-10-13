@@ -1,5 +1,5 @@
 If:
-  PathMatch: .*\.cu
+  PathMatch: .*\.(cu|cuh)$
 Diagnostics:
   Suppress:
     - ovl_no_oper

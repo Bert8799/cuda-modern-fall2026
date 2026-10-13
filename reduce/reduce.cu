@@ -7,13 +7,18 @@
 #include <vector>
 #include <cuda_runtime.h>
 
-constexpr int THREADS_PER_BLOCK = 256;
-constexpr int WARP_SIZE = 32;
-constexpr int WARP_COUNT = THREADS_PER_BLOCK / WARP_SIZE;
-constexpr float RELATIVE_TOLERANCE = 1e-5f;
+#include "includes/v1_global.cuh"
+#include "includes/v2_shared.cuh"
+#include "includes/v3_two_elements.cuh"
+#include "includes/v4_unroll_warp.cuh"
+#include "includes/v5_shuffle.cuh"
 
-static_assert((THREADS_PER_BLOCK & (THREADS_PER_BLOCK - 1)) == 0,
-              "THREADS_PER_BLOCK must be a power of two");
+// Threads per block used to launch every reduction version.
+constexpr int THREADS_PER_BLOCK = 256;
+
+// Running without arguments executes the newest kernel version.
+constexpr int LATEST_VERSION = 5;
+constexpr float RELATIVE_TOLERANCE = 1e-5f;
 
 struct CudaDeleter {
     void operator()(float* pointer) const noexcept {
@@ -37,48 +42,6 @@ struct CudaDeleter {
         }                                            \
     } while (false)
 
-// Reduce a partial sum across all 32 lanes of a warp with shuffle instructions.
-// The value converges to lane 0; every lane must call it with the same mask.
-__device__ __forceinline__ float warp_reduce_sum(float value) {
-    value += __shfl_down_sync(0xffffffff, value, 16);
-    value += __shfl_down_sync(0xffffffff, value, 8);
-    value += __shfl_down_sync(0xffffffff, value, 4);
-    value += __shfl_down_sync(0xffffffff, value, 2);
-    value += __shfl_down_sync(0xffffffff, value, 1);
-    return value;
-}
-
-__global__ void reduce(float* input, float* output, int N) {
-    const int tid = threadIdx.x;
-    const int block_start = blockIdx.x * blockDim.x * 2;
-    const int index_a = block_start + tid;
-    const int index_b = index_a + blockDim.x;
-
-    // Load two elements per thread and add them in registers.
-    const float a = index_a < N ? input[index_a] : 0.0f;
-    const float b = index_b < N ? input[index_b] : 0.0f;
-
-    // Reduce each warp to a single partial sum in registers, then hand only
-    // the warp-level sums to shared memory for the cross-warp reduction.
-    __shared__ float warp_level_sums[WARP_COUNT];
-    const float warp_sum = warp_reduce_sum(a + b);
-    const int lane_id = tid % WARP_SIZE;
-    const int warp_id = tid / WARP_SIZE;
-    if (lane_id == 0) {
-        warp_level_sums[warp_id] = warp_sum;
-    }
-    __syncthreads();
-
-    // Let the first warp reduce the WARP_COUNT warp-level sums.
-    if (warp_id == 0) {
-        const float warp_level_sum = lane_id < WARP_COUNT ? warp_level_sums[lane_id] : 0.0f;
-        const float block_sum = warp_reduce_sum(warp_level_sum);
-        if (lane_id == 0) {
-            output[blockIdx.x] = block_sum;
-        }
-    }
-}
-
 bool check(const std::vector<float>& expected, const std::vector<float>& actual) {
     if (expected.size() != actual.size()) {
         return false;
@@ -94,9 +57,20 @@ bool check(const std::vector<float>& expected, const std::vector<float>& actual)
     return true;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    const int version = argc > 1 ? std::atoi(argv[1]) : LATEST_VERSION;
+    if (version < 1 || version > LATEST_VERSION) {
+        std::fprintf(stderr, "usage: %s [kernel version: 1..%d]\n", argv[0], LATEST_VERSION);
+        return EXIT_FAILURE;
+    }
+
     const int N = 32 * 1024 * 1024;
-    const int block_num = (N + THREADS_PER_BLOCK - 1) / (2 * THREADS_PER_BLOCK);
+
+    // reduce_v1/v2 reduce THREADS_PER_BLOCK input elements per block, while
+    // reduce_v3 and later read two elements per thread. This decides the grid
+    // size and how the host-side expected sums are split.
+    const int elements_per_block = version <= 2 ? THREADS_PER_BLOCK : 2 * THREADS_PER_BLOCK;
+    const int block_num = (N + elements_per_block - 1) / elements_per_block;
 
     std::vector<float> input(N);
     std::vector<float> output(block_num);
@@ -108,10 +82,12 @@ int main() {
         value = distribution(generator);
     }
 
+    // Host-side expected sums, split into chunks with the same block size as
+    // the selected kernel.
     for (int i = 0; i < block_num; i++) {
         float sum = 0.0f;
-        const int block_start = i * 2 * THREADS_PER_BLOCK;
-        const int block_end = std::min(block_start + 2 * THREADS_PER_BLOCK, N);
+        const int block_start = i * elements_per_block;
+        const int block_end = std::min(block_start + elements_per_block, N);
         for (int j = block_start; j < block_end; j++) {
             sum += input[j];
         }
@@ -131,8 +107,28 @@ int main() {
     CUDA_CHECK(cudaMemcpy(
         input_guard.get(), input.data(), input.size() * sizeof(float), cudaMemcpyHostToDevice));
 
-    reduce<<<static_cast<unsigned int>(block_num), THREADS_PER_BLOCK>>>(
-        input_guard.get(), output_guard.get(), N);
+    switch (version) {
+        case 1:
+            reduce_v1::reduce<<<block_num, THREADS_PER_BLOCK>>>(
+                input_guard.get(), output_guard.get(), N);
+            break;
+        case 2:
+            reduce_v2::reduce<<<block_num, THREADS_PER_BLOCK>>>(
+                input_guard.get(), output_guard.get(), N);
+            break;
+        case 3:
+            reduce_v3::reduce<<<block_num, THREADS_PER_BLOCK>>>(
+                input_guard.get(), output_guard.get(), N);
+            break;
+        case 4:
+            reduce_v4::reduce<<<block_num, THREADS_PER_BLOCK>>>(
+                input_guard.get(), output_guard.get(), N);
+            break;
+        case 5:
+            reduce_v5::reduce<<<block_num, THREADS_PER_BLOCK>>>(
+                input_guard.get(), output_guard.get(), N);
+            break;
+    }
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
