@@ -13,6 +13,8 @@ CompileFlags:
     - --cuda-path=/usr/local/cuda
     - -std=c++17
     - --cuda-gpu-arch=sm_75
+    # Let clangd finish parsing so CUDA-related diagnostic suppressions apply.
+    - -ferror-limit=100
   Remove:
     - -forward-unknown-to-host-compiler
     - -ccbin=*
