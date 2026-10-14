@@ -10,8 +10,9 @@
 #include "includes/v1_global.cuh"
 #include "includes/v2_global_1d.cuh"
 #include "includes/v3_shared.cuh"
-#include "includes/v4_shared_float4.cuh"
-#include "includes/v5_shared_warptiling.cuh"
+#include "includes/v4_float4.cuh"
+#include "includes/v5_warptiling.cuh"
+#include "includes/v6_async_buffer.cuh"
 
 constexpr int M = 2048;
 constexpr int K = 2048;
@@ -25,8 +26,13 @@ static_assert(M % sgemm_v5::BM == 0 && N % sgemm_v5::BN == 0 && K % sgemm_v5::BK
               "v5 requires complete BM x BN x BK tiles");
 static_assert(K % sgemm_v5::VECTOR_WIDTH == 0 && N % sgemm_v5::VECTOR_WIDTH == 0,
               "v5 requires float4-aligned A, B, and C row strides");
+static_assert(M % sgemm_v6::BM == 0 && N % sgemm_v6::BN == 0 && K % sgemm_v6::BK == 0 &&
+                  K >= sgemm_v6::BK,
+              "v6 requires at least one complete BM x BN x BK tile");
+static_assert(K % sgemm_v6::VECTOR_WIDTH == 0 && N % sgemm_v6::VECTOR_WIDTH == 0,
+              "v6 requires float4-aligned A, B, and C row strides");
 // Running without arguments executes the newest kernel version.
-constexpr int LATEST_VERSION = 5;
+constexpr int LATEST_VERSION = 6;
 // The reference and the kernel sum the same K products in the same order,
 // but the kernel may fuse some operations into FMAs, so the results differ by
 // a few ULPs. 1e-4 covers that while still catching real indexing bugs, which
@@ -154,10 +160,14 @@ int main(int argc, char* argv[]) {
         block = dim3(sgemm_v4::NUM_THREADS);
         grid = dim3((N + sgemm_v4::BN - 1) / sgemm_v4::BN,
                     (M + sgemm_v4::BM - 1) / sgemm_v4::BM);
-    } else {
+    } else if (version == 5) {
         block = dim3(sgemm_v5::NUM_THREADS);
         grid = dim3((N + sgemm_v5::BN - 1) / sgemm_v5::BN,
                     (M + sgemm_v5::BM - 1) / sgemm_v5::BM);
+    } else {
+        block = dim3(sgemm_v6::NUM_THREADS);
+        grid = dim3((N + sgemm_v6::BN - 1) / sgemm_v6::BN,
+                    (M + sgemm_v6::BM - 1) / sgemm_v6::BM);
     }
 
     switch (version) {
@@ -179,6 +189,10 @@ int main(int argc, char* argv[]) {
             break;
         case 5:
             sgemm_v5::sgemm<<<grid, block>>>(
+                a_guard.get(), b_guard.get(), c_guard.get(), K, N);
+            break;
+        case 6:
+            sgemm_v6::sgemm<<<grid, block>>>(
                 a_guard.get(), b_guard.get(), c_guard.get(), K, N);
             break;
     }
