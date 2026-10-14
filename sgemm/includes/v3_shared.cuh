@@ -8,7 +8,8 @@ constexpr int BM = 128;
 constexpr int BN = 128;
 constexpr int BK = 8;
 
-// Each thread accumulates a THREAD_TILE_Y x THREAD_TILE_X block of outputs.
+// Each thread owns a 2D output tile with THREAD_TILE_Y rows and THREAD_TILE_X
+// columns, and accumulates all values in that tile.
 constexpr int THREAD_TILE_X = 8;
 constexpr int THREAD_TILE_Y = 8;
 constexpr int BLOCK_X = BN / THREAD_TILE_X;
@@ -40,6 +41,8 @@ __global__ void sgemm(const float* A, const float* B, float* C, int m, int k, in
         // Load the A and B tiles cooperatively, padding incomplete edge tiles
         // with zero so the same kernel supports dimensions not divisible by
         // the tile sizes.
+        // Each warp writes 32 consecutive floats in each shared tile, so the
+        // cooperative stores touch distinct banks.
         for (int index = tid; index < BM * BK; index += BLOCK_X * BLOCK_Y) {
             const int row = tile_row + index / BK;
             const int column = tile + index % BK;
@@ -53,6 +56,11 @@ __global__ void sgemm(const float* A, const float* B, float* C, int m, int k, in
         __syncthreads();
 
         // Accumulate this K slice into every output owned by the thread.
+        // With BLOCK_X=16 and BK=8, each warp spans two adjacent threadIdx.y
+        // values. A is broadcast within each 16-lane group; the two addresses
+        // differ by 8 words and therefore map to different banks.
+        // B varies across 16 consecutive threadIdx.x values (distinct banks),
+        // while the other 16 lanes repeat those addresses and use broadcast.
         for (int i = 0; i < BK; i++) {
             for (int row = 0; row < THREAD_TILE_Y; row++) {
                 for (int column = 0; column < THREAD_TILE_X; column++) {
